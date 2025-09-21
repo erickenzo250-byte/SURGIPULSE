@@ -79,7 +79,7 @@ def seed_default_staff():
 seed_default_staff()
 
 # ---------------------------
-# RANDOM SURGERY DATA (Jan to Now)
+# RANDOM SURGERY DATA (JAN TO NOW)
 # ---------------------------
 
 def generate_random_surgeries():
@@ -134,14 +134,14 @@ page = st.sidebar.radio("Go to", ["Dashboard", "Log Surgery", "Assign Targets", 
 # ---------------------------
 # DASHBOARD
 # ---------------------------
-
 if page == "Dashboard":
-    st.markdown("<h1 style='text-align:center; color:#4B0082;'>📊 SurgiPulse Dashboard</h1>", unsafe_allow_html=True)
+    st.title("📊 Surgery Dashboard")
     with get_session() as session:
         surgeries = session.exec(select(Surgery)).all()
-        staff_list = session.exec(select(Staff)).all()
+        staff = session.exec(select(Staff)).all()
         st.metric("Total Surgeries", len(surgeries))
-        st.metric("Total Staff", len(staff_list))
+        st.metric("Total Staff", len(staff))
+
         if surgeries:
             df = pd.DataFrame([{"Region": s.region, "Hospital": s.hospital, "Date": s.date.date()} for s in surgeries])
             st.subheader("📈 Surgeries by Region")
@@ -153,17 +153,18 @@ if page == "Dashboard":
 # ---------------------------
 # LOG SURGERY
 # ---------------------------
-
 elif page == "Log Surgery":
-    st.markdown("<h2>📝 Log New Surgery</h2>", unsafe_allow_html=True)
+    st.title("📝 Log Surgery")
     with get_session() as session:
         staff_list = session.exec(select(Staff)).all()
         staff_dict = {s.name: s for s in staff_list}
         staff_name = st.selectbox("Select Staff", list(staff_dict.keys()))
         staff = staff_dict[staff_name]
+
         hospital = st.text_input("Hospital", staff.hospital)
         region = st.text_input("Region", staff.region)
         date = st.date_input("Surgery Date", datetime.today())
+
         if st.button("Log Surgery"):
             new_surgery = Surgery(staff_id=staff.id, hospital=hospital, region=region, date=date)
             session.add(new_surgery)
@@ -173,19 +174,20 @@ elif page == "Log Surgery":
 # ---------------------------
 # ASSIGN TARGETS
 # ---------------------------
-
 elif page == "Assign Targets":
-    st.markdown("<h2>🎯 Assign Surgery Targets</h2>", unsafe_allow_html=True)
+    st.title("🎯 Assign Surgery Targets")
     with get_session() as session:
         staff_list = session.exec(select(Staff)).all()
         staff_dict = {s.name: s for s in staff_list}
         staff_name = st.selectbox("Select Staff", list(staff_dict.keys()))
         staff = staff_dict[staff_name]
+
         month = st.selectbox("Month", [
-            "January","February","March","April","May","June",
-            "July","August","September","October","November","December"
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
         ])
         target = st.number_input("Target Surgeries", min_value=1, step=1)
+
         if st.button("Assign Target"):
             new_target = Target(staff_id=staff.id, month=month, target_surgeries=target)
             session.add(new_target)
@@ -195,14 +197,15 @@ elif page == "Assign Targets":
 # ---------------------------
 # REPORTS
 # ---------------------------
-
 elif page == "Reports":
-    st.markdown("<h2>📑 Surgery Reports</h2>", unsafe_allow_html=True)
+    st.title("📑 Reports")
     with get_session() as session:
         surgeries = session.exec(select(Surgery)).all()
         if surgeries:
             df = pd.DataFrame([{"Staff": s.staff.name, "Hospital": s.hospital, "Region": s.region, "Date": s.date.date()} for s in surgeries])
+            st.subheader("Surgeries by Staff")
             st.dataframe(df)
+
             col1, col2 = st.columns(2)
             with col1:
                 excel = export_excel(df)
@@ -211,12 +214,17 @@ elif page == "Reports":
                 pdf = export_pdf(df)
                 st.download_button("⬇ Export to PDF", pdf, "report.pdf", mime="application/pdf")
 
+            st.subheader("📊 Surgeries by Hospital")
+            hospital_chart = alt.Chart(df).mark_bar().encode(
+                x="Hospital", y="count()", color="Hospital"
+            )
+            st.altair_chart(hospital_chart, use_container_width=True)
+
 # ---------------------------
 # LEADERBOARDS
 # ---------------------------
-
 elif page == "Leaderboards":
-    st.markdown("<h2>🏆 Leaderboards</h2>", unsafe_allow_html=True)
+    st.title("🏆 Leaderboards")
     with get_session() as session:
         staff_list = session.exec(select(Staff)).all()
         leaderboard = []
@@ -236,9 +244,8 @@ elif page == "Leaderboards":
 # ---------------------------
 # TRENDS
 # ---------------------------
-
 elif page == "Trends":
-    st.markdown("<h2>📈 Monthly Trends (Total Surgeries)</h2>", unsafe_allow_html=True)
+    st.title("📈 Monthly Trends (Total Surgeries)")
     with get_session() as session:
         surgeries = session.exec(select(Surgery)).all()
         if surgeries:
