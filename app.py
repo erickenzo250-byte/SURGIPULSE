@@ -1,11 +1,13 @@
 import streamlit as st
 from sqlmodel import SQLModel, Field, Session, create_engine, select, Relationship
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
+import numpy as np
 import altair as alt
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 import io
+import random
 
 # -------------------------------
 # DATABASE MODELS
@@ -47,7 +49,7 @@ class Target(SQLModel, table=True):
 # DATABASE SETUP
 # -------------------------------
 
-engine = create_engine("sqlite:///orthopulse.db")
+engine = create_engine("sqlite:///surgipulse.db")
 SQLModel.metadata.create_all(engine)
 
 def get_session():
@@ -55,16 +57,27 @@ def get_session():
 
 
 # -------------------------------
-# SEED DEFAULT STAFF
+# SEED DEFAULT STAFF (only once)
 # -------------------------------
 def seed_default_staff():
     with get_session() as session:
         existing = session.exec(select(Staff)).all()
         if not existing:
             staff_list = [
-                Staff(name="Dr. Alice", role="Surgeon", hospital="Eldoret Hospital", region="Rift Valley"),
-                Staff(name="Dr. Brian", role="Surgeon", hospital="Kenyatta Hospital", region="Nairobi"),
-                Staff(name="Dr. Carol", role="Surgeon", hospital="Coast General", region="Coast"),
+                Staff(name="Josephine", role="Nurse", hospital="Moi Teaching & Referral Hospital", region="Eldoret"),
+                Staff(name="Carol", role="Surgeon", hospital="Aga Khan University Hospital", region="Nairobi/Kijabe"),
+                Staff(name="Jacob", role="Technician", hospital="Meru Teaching & Referral", region="Meru"),
+                Staff(name="Naomi", role="Nurse", hospital="Coast General Hospital", region="Mombasa"),
+                Staff(name="Charity", role="Surgeon", hospital="Kenyatta National Hospital", region="Nairobi/Kijabe"),
+                Staff(name="Kevin", role="Assistant", hospital="St. Luke’s Orthopedic Hospital", region="Eldoret"),
+                Staff(name="Miriam", role="Surgeon", hospital="Meru Level 5 Hospital", region="Meru"),
+                Staff(name="Brian", role="Technician", hospital="Mombasa Hospital", region="Mombasa"),
+                Staff(name="James", role="Surgeon", hospital="Kijabe Mission Hospital", region="Nairobi/Kijabe"),
+                Staff(name="Faith", role="Nurse", hospital="Reale Hospital", region="Eldoret"),
+                Staff(name="Geoffrey", role="Technician", hospital="Mater Hospital", region="Nairobi/Kijabe"),
+                Staff(name="Spencer", role="Surgeon", hospital="Pandya Memorial Hospital", region="Mombasa"),
+                Staff(name="Evans", role="Nurse", hospital="Meru General Hospital", region="Meru"),
+                Staff(name="Eric", role="Surgeon", hospital="Moi Teaching & Referral Hospital", region="Eldoret"),
             ]
             session.add_all(staff_list)
             session.commit()
@@ -80,7 +93,6 @@ def export_excel(df: pd.DataFrame):
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Report")
     return output.getvalue()
-
 
 def export_pdf(df: pd.DataFrame):
     buffer = io.BytesIO()
@@ -99,32 +111,72 @@ def export_pdf(df: pd.DataFrame):
 
 
 # -------------------------------
+# RANDOM TEST DATA GENERATOR
+# -------------------------------
+def generate_random_surgeries():
+    with get_session() as session:
+        staff_list = session.exec(select(Staff)).all()
+        start_date = datetime(2025, 1, 1)
+        end_date = datetime.today()
+        days = (end_date - start_date).days
+
+        for s in staff_list:
+            # Each staff gets between 10–50 surgeries randomly spread across months
+            num_surgeries = random.randint(10, 50)
+            for _ in range(num_surgeries):
+                random_date = start_date + timedelta(days=random.randint(0, days))
+                surgery = Surgery(
+                    staff_id=s.id,
+                    hospital=s.hospital,
+                    region=s.region,
+                    date=random_date
+                )
+                session.add(surgery)
+        session.commit()
+
+
+# -------------------------------
 # STREAMLIT APP
 # -------------------------------
 
-st.set_page_config(page_title="Orthopulse Dashboard", layout="wide")
-st.sidebar.title("Orthopulse Navigation")
-page = st.sidebar.radio("Go to", ["Dashboard", "Log Surgery", "Assign Targets", "Reports", "Leaderboard"])
+st.set_page_config(page_title="SurgiPulse Dashboard", layout="wide")
+st.sidebar.title("⚙️ SurgiPulse Navigation")
+page = st.sidebar.radio("Go to", ["Dashboard", "Log Surgery", "Assign Targets", "Reports", "Leaderboard", "⚡ Generate Test Data"])
 
 
 # -------------------------------
 # DASHBOARD
 # -------------------------------
 if page == "Dashboard":
-    st.title("📊 Orthopulse Surgery Dashboard")
+    st.title("📊 Surgery Dashboard")
     with get_session() as session:
         surgeries = session.exec(select(Surgery)).all()
         staff = session.exec(select(Staff)).all()
-        st.metric("Total Surgeries", len(surgeries))
-        st.metric("Total Staff", len(staff))
+
+        col1, col2 = st.columns(2)
+        col1.metric("Total Surgeries", len(surgeries))
+        col2.metric("Total Staff", len(staff))
 
         if surgeries:
             df = pd.DataFrame([{"Region": s.region, "Hospital": s.hospital, "Date": s.date.date()} for s in surgeries])
-            st.subheader("📈 Surgeries by Region")
+
+            # Surgeries by Region
+            st.subheader("📍 Surgeries by Region")
             region_chart = alt.Chart(df).mark_bar().encode(
                 x="Region", y="count()", color="Region"
             )
             st.altair_chart(region_chart, use_container_width=True)
+
+            # Trend by Month
+            st.subheader("📈 Monthly Surgery Trend (Jan–Now)")
+            df["Month"] = pd.to_datetime(df["Date"]).dt.to_period("M").astype(str)
+            trend = df.groupby("Month").size().reset_index(name="Total Surgeries")
+            all_months = pd.period_range("2025-01", datetime.today().strftime("%Y-%m")).astype(str)
+            trend = trend.set_index("Month").reindex(all_months, fill_value=0).reset_index().rename(columns={"index": "Month"})
+            line_chart = alt.Chart(trend).mark_line(point=True).encode(
+                x="Month", y="Total Surgeries"
+            )
+            st.altair_chart(line_chart, use_container_width=True)
 
 
 # -------------------------------
@@ -177,7 +229,7 @@ elif page == "Assign Targets":
 # REPORTS
 # -------------------------------
 elif page == "Reports":
-    st.title("📑 Orthopulse Reports")
+    st.title("📑 Reports")
     with get_session() as session:
         surgeries = session.exec(select(Surgery)).all()
         if surgeries:
@@ -204,7 +256,7 @@ elif page == "Reports":
 # LEADERBOARD
 # -------------------------------
 elif page == "Leaderboard":
-    st.title("🏆 Orthopulse Leaderboard")
+    st.title("🏆 Leaderboard")
     with get_session() as session:
         staff_list = session.exec(select(Staff)).all()
         leaderboard = []
@@ -220,3 +272,14 @@ elif page == "Leaderboard":
             })
         df = pd.DataFrame(leaderboard).sort_values(by="Surgeries", ascending=False)
         st.dataframe(df)
+
+
+# -------------------------------
+# GENERATE TEST DATA
+# -------------------------------
+elif page == "⚡ Generate Test Data":
+    st.title("⚡ Generate Random Test Data")
+    if st.button("Generate Now"):
+        generate_random_surgeries()
+        st.success("✅ Random test data generated successfully!")
+        st.rerun()
