@@ -1,15 +1,14 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
-import altair as alt
-from datetime import datetime, timedelta
-import random
 from sqlmodel import SQLModel, Field, Session, create_engine, select, Relationship
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
+from datetime import datetime, timedelta
+import pandas as pd
+import altair as alt
 import io
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+import random
+import numpy as np
 from sklearn.linear_model import LinearRegression
-import time
 
 # -------------------------------
 # DATABASE MODELS
@@ -17,20 +16,20 @@ import time
 class Staff(SQLModel, table=True):
     id: int = Field(default=None, primary_key=True)
     name: str
-    region: str
-    hospital: str
     role: str = "Surgeon"
+    hospital: str
+    region: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    surgeries: "list[Surgery] | None" = Relationship(back_populates="staff")
-    targets: "list[Target] | None" = Relationship(back_populates="staff")
+    surgeries: list["Surgery"] = Relationship(back_populates="staff")
+    targets: list["Target"] = Relationship(back_populates="staff")
 
 class Surgery(SQLModel, table=True):
     id: int = Field(default=None, primary_key=True)
     staff_id: int = Field(foreign_key="staff.id")
-    date: datetime = Field(default_factory=datetime.utcnow)
-    region: str
     hospital: str
-    staff: "Staff | None" = Relationship(back_populates="surgeries")
+    region: str
+    date: datetime
+    staff: "Staff" = Relationship(back_populates="surgeries")
 
 class Target(SQLModel, table=True):
     id: int = Field(default=None, primary_key=True)
@@ -38,7 +37,7 @@ class Target(SQLModel, table=True):
     month: str
     target_surgeries: int
     assigned_at: datetime = Field(default_factory=datetime.utcnow)
-    staff: "Staff | None" = Relationship(back_populates="targets")
+    staff: "Staff" = Relationship(back_populates="targets")
 
 # -------------------------------
 # DATABASE SETUP
@@ -50,52 +49,60 @@ def get_session():
     return Session(engine)
 
 # -------------------------------
-# DEFAULT DATA
+# SEED DEFAULT STAFF
 # -------------------------------
-DEFAULT_STAFF = [
-    "Josephine","Carol","Jacob","Naomi","Charity","Kevin","Miriam",
-    "Brian","James","Faith","Geoffrey","Spencer","Evans","Eric"
-]
-DEFAULT_REGIONS = ["Eldoret","Nairobi/Kijabe","Meru","Mombasa"]
-HOSPITAL_MAP = {
-    "Eldoret": ["Moi Teaching & Referral","Eldoret County Hospital"],
-    "Nairobi/Kijabe": ["Kenyatta National Hospital","Kijabe Mission Hospital"],
-    "Meru": ["Meru Teaching & Referral","Meru County Hospital"],
-    "Mombasa": ["Coast General","Mombasa Hospital"]
-}
-
-def seed_staff():
+def seed_default_staff():
+    default_staff = [
+        {"name":"Josephine","hospital":"Eldoret Hospital","region":"Eldoret"},
+        {"name":"Carol","hospital":"Nairobi Hospital","region":"Nairobi/Kijabe"},
+        {"name":"Jacob","hospital":"Meru Hospital","region":"Meru"},
+        {"name":"Naomi","hospital":"Mombasa General","region":"Mombasa"},
+        {"name":"Charity","hospital":"Eldoret Hospital","region":"Eldoret"},
+        {"name":"Kevin","hospital":"Nairobi Hospital","region":"Nairobi/Kijabe"},
+        {"name":"Miriam","hospital":"Meru Hospital","region":"Meru"},
+        {"name":"Brian","hospital":"Mombasa General","region":"Mombasa"},
+        {"name":"James","hospital":"Eldoret Hospital","region":"Eldoret"},
+        {"name":"Faith","hospital":"Nairobi Hospital","region":"Nairobi/Kijabe"},
+        {"name":"Geoffrey","hospital":"Meru Hospital","region":"Meru"},
+        {"name":"Spencer","hospital":"Mombasa General","region":"Mombasa"},
+        {"name":"Evans","hospital":"Eldoret Hospital","region":"Eldoret"},
+        {"name":"Eric","hospital":"Nairobi Hospital","region":"Nairobi/Kijabe"},
+    ]
     with get_session() as session:
         existing = session.exec(select(Staff)).all()
         if not existing:
-            staff_objs = []
-            for name in DEFAULT_STAFF:
-                region = random.choice(DEFAULT_REGIONS)
-                hospital = random.choice(HOSPITAL_MAP[region])
-                staff_objs.append(Staff(name=name, region=region, hospital=hospital))
-            session.add_all(staff_objs)
+            for s in default_staff:
+                session.add(Staff(**s))
             session.commit()
-seed_staff()
+
+seed_default_staff()
 
 # -------------------------------
 # RANDOM SURGERY GENERATION
 # -------------------------------
-def generate_random_surgeries(n=200):
+def generate_random_surgeries(n=150):
     with get_session() as session:
         staff_list = session.exec(select(Staff)).all()
-        surgeries = []
+        if not staff_list:
+            return
+        procedures = ["THA","TKA","Hip Revision","Knee Revision","Trauma Fixation"]
         for _ in range(n):
             staff = random.choice(staff_list)
             date = datetime.today() - timedelta(days=random.randint(0, 300))
-            hospital = staff.hospital
-            region = staff.region
-            surgeries.append(Surgery(staff_id=staff.id, date=date, hospital=hospital, region=region))
-        session.add_all(surgeries)
+            surgery = Surgery(
+                staff_id=staff.id,
+                hospital=staff.hospital,
+                region=staff.region,
+                date=date
+            )
+            session.add(surgery)
         session.commit()
-generate_random_surgeries()
+
+# Uncomment below to generate test data once
+# generate_random_surgeries(200)
 
 # -------------------------------
-# EXPORT FUNCTIONS
+# EXPORT HELPERS
 # -------------------------------
 def export_excel(df: pd.DataFrame):
     output = io.BytesIO()
@@ -108,9 +115,8 @@ def export_pdf(df: pd.DataFrame):
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
     text = c.beginText(40, height-40)
-    text.setFont("Helvetica", 10)
-    lines = df.to_string(index=False).split("\n")
-    for line in lines:
+    text.setFont("Helvetica",10)
+    for line in df.to_string(index=False).split("\n"):
         text.textLine(line)
     c.drawText(text)
     c.showPage()
@@ -121,33 +127,26 @@ def export_pdf(df: pd.DataFrame):
 # -------------------------------
 # STREAMLIT APP
 # -------------------------------
-st.set_page_config(page_title="SurgiPulse Pro", page_icon="🦴", layout="wide")
+st.set_page_config(page_title="SurgiPulse Pro", layout="wide")
 st.sidebar.title("SurgiPulse Navigation")
-page = st.sidebar.radio("Go to", ["Dashboard","Log Surgery","Assign Targets","Leaderboard","Trends","Reports"])
+page = st.sidebar.radio("Go to", ["Dashboard","Log Surgery","Assign Targets","Trends","Leaderboard","Reports"])
 
 # -------------------------------
 # DASHBOARD
 # -------------------------------
 if page=="Dashboard":
-    st.header("📊 Surgery Dashboard")
+    st.header("📊 Dashboard")
     with get_session() as session:
         surgeries = session.exec(select(Surgery)).all()
-        staff_list_db = session.exec(select(Staff)).all()
-        st.metric("🟢 Total Surgeries", len(surgeries))
-        st.metric("🔵 Total Staff", len(staff_list_db))
-
+        staff = session.exec(select(Staff)).all()
+        st.metric("Total Surgeries", len(surgeries))
+        st.metric("Total Staff", len(staff))
         if surgeries:
             df = pd.DataFrame([{"Region": s.region, "Hospital": s.hospital, "Date": s.date} for s in surgeries])
-            # Region Chart
-            region_chart = alt.Chart(df).mark_bar().encode(
-                x='Region', y='count()', color='Region', tooltip=['Region','count()']
-            ).properties(title="Surgeries by Region")
-            st.altair_chart(region_chart,use_container_width=True)
-            # Hospital Chart
-            hospital_chart = alt.Chart(df).mark_bar().encode(
-                x='Hospital', y='count()', color='Hospital', tooltip=['Hospital','count()']
-            ).properties(title="Surgeries by Hospital")
-            st.altair_chart(hospital_chart,use_container_width=True)
+            chart = alt.Chart(df).mark_bar().encode(
+                x="Region", y="count()", color="Region"
+            )
+            st.altair_chart(chart,use_container_width=True)
 
 # -------------------------------
 # LOG SURGERY
@@ -155,14 +154,14 @@ if page=="Dashboard":
 elif page=="Log Surgery":
     st.header("📝 Log Surgery")
     with get_session() as session:
-        staff_list_db = session.exec(select(Staff)).all()
-        staff_dict = {s.name:s for s in staff_list_db}
-        staff_name = st.selectbox("Select Staff", list(staff_dict.keys()))
+        staff_list = session.exec(select(Staff)).all()
+        staff_dict = {s.name:s for s in staff_list}
+        staff_name = st.selectbox("Select Staff",list(staff_dict.keys()))
         staff = staff_dict[staff_name]
-        hospital = st.selectbox("Hospital", HOSPITAL_MAP[staff.region])
         date = st.date_input("Surgery Date", datetime.today())
         if st.button("Log Surgery"):
-            session.add(Surgery(staff_id=staff.id, date=date, hospital=hospital, region=staff.region))
+            surgery = Surgery(staff_id=staff.id,hospital=staff.hospital,region=staff.region,date=date)
+            session.add(surgery)
             session.commit()
             st.success(f"Surgery logged for {staff_name} on {date}")
 
@@ -170,69 +169,67 @@ elif page=="Log Surgery":
 # ASSIGN TARGETS
 # -------------------------------
 elif page=="Assign Targets":
-    st.header("🎯 Assign Surgery Targets")
+    st.header("🎯 Assign Targets")
     with get_session() as session:
-        staff_list_db = session.exec(select(Staff)).all()
-        staff_dict = {s.name:s for s in staff_list_db}
-        staff_name = st.selectbox("Select Staff", list(staff_dict.keys()))
+        staff_list = session.exec(select(Staff)).all()
+        staff_dict = {s.name:s for s in staff_list}
+        staff_name = st.selectbox("Select Staff",list(staff_dict.keys()))
         staff = staff_dict[staff_name]
-        month = st.selectbox("Month", [
-            "January","February","March","April","May","June",
-            "July","August","September","October","November","December"
-        ])
-        target = st.number_input("Target Surgeries", min_value=1, step=1)
+        month = st.selectbox("Month", ["January","February","March","April","May","June","July","August","September","October","November","December"])
+        target = st.number_input("Target Surgeries",min_value=1,step=1)
         if st.button("Assign Target"):
-            session.add(Target(staff_id=staff.id, month=month, target_surgeries=target))
+            new_target = Target(staff_id=staff.id, month=month, target_surgeries=target)
+            session.add(new_target)
             session.commit()
             st.success(f"Assigned {target} surgeries for {staff_name} in {month}")
-
-# -------------------------------
-# LEADERBOARD
-# -------------------------------
-elif page=="Leaderboard":
-    st.header("🏆 Leaderboard with Badges")
-    with get_session() as session:
-        staff_list_db = session.exec(select(Staff)).all()
-        leaderboard = []
-        for s in staff_list_db:
-            surgeries = session.exec(select(Surgery).where(Surgery.staff_id==s.id)).all()
-            targets = session.exec(select(Target).where(Target.staff_id==s.id)).all()
-            total_target = sum(t.target_surgeries for t in targets)
-            progress = len(surgeries)/total_target if total_target else 0
-            leaderboard.append({"Staff":s.name,"Surgeries":len(surgeries),"Target":total_target,"Progress":progress})
-        df_lb = pd.DataFrame(leaderboard).sort_values(by="Surgeries",ascending=False)
-        badges=["🥇","🥈","🥉"]
-        for i,row in df_lb.iterrows():
-            badge=badges[i] if i<3 else ""
-            st.markdown(f"**{badge} {row['Staff']}** - Surgeries: {row['Surgeries']} | Target: {row['Target']}")
-            st.progress(min(row["Progress"],1.0))
 
 # -------------------------------
 # TRENDS
 # -------------------------------
 elif page=="Trends":
-    st.header("📈 Surgery Trends & Forecast")
+    st.header("📈 Trends")
     with get_session() as session:
         surgeries = session.exec(select(Surgery)).all()
         if surgeries:
-            df_trend = pd.DataFrame([{"Staff": s.staff.name, "Date": s.date} for s in surgeries])
-            df_trend['Month'] = df_trend['Date'].dt.to_period('M').dt.to_timestamp()
-            trend = df_trend.groupby('Month').count()['Staff'].reset_index()
-            trend.rename(columns={"Staff":"Total Surgeries"}, inplace=True)
-            trend['MA3']=trend['Total Surgeries'].rolling(3).mean()
-            # Linear regression
-            trend['MonthNum']=np.arange(len(trend)).reshape(-1,1)
+            df = pd.DataFrame([{"Date": s.date.date()} for s in surgeries])
+            df['Month'] = df['Date'].apply(lambda x: x.strftime("%Y-%m"))
+            trend = df.groupby('Month').size().reset_index(name="Total Surgeries")
+            trend['MonthNum'] = np.arange(len(trend)).reshape(-1,1)
+            # Linear Regression Forecast
+            X = trend['MonthNum'].values.reshape(-1,1)
+            y = trend['Total Surgeries'].values
             model = LinearRegression()
-            model.fit(trend['MonthNum'],trend['Total Surgeries'])
-            trend['Forecast']=model.predict(trend['MonthNum'])
-            # Chart
+            model.fit(X,y)
+            trend['Forecast'] = model.predict(X)
+            trend['MA3'] = trend['Total Surgeries'].rolling(3).mean()
             base = alt.Chart(trend).encode(x='Month:T')
-            line1 = base.mark_line(color='blue').encode(y='Total Surgeries')
-            line2 = base.mark_line(color='red',strokeDash=[5,5]).encode(y='Forecast')
+            line_actual = base.mark_line(color='blue').encode(y='Total Surgeries')
+            line_forecast = base.mark_line(color='red',strokeDash=[5,5]).encode(y='Forecast')
             ma_line = base.mark_line(color='green').encode(y='MA3')
-            chart = line1+line2+ma_line
+            chart = line_actual + line_forecast + ma_line
             st.altair_chart(chart,use_container_width=True)
             st.dataframe(trend)
+
+# -------------------------------
+# LEADERBOARD
+# -------------------------------
+elif page=="Leaderboard":
+    st.header("🏆 Leaderboard")
+    with get_session() as session:
+        staff_list = session.exec(select(Staff)).all()
+        leaderboard = []
+        for s in staff_list:
+            surgeries = session.exec(select(Surgery).where(Surgery.staff_id==s.id)).all()
+            targets = session.exec(select(Target).where(Target.staff_id==s.id)).all()
+            total_target = sum(t.target_surgeries for t in targets)
+            leaderboard.append({
+                "Staff": s.name,
+                "Surgeries": len(surgeries),
+                "Target": total_target,
+                "Progress": f"{len(surgeries)}/{total_target}" if total_target else "No target"
+            })
+        df = pd.DataFrame(leaderboard).sort_values(by="Surgeries",ascending=False)
+        st.dataframe(df)
 
 # -------------------------------
 # REPORTS
@@ -244,10 +241,8 @@ elif page=="Reports":
         if surgeries:
             df = pd.DataFrame([{"Staff": s.staff.name, "Hospital": s.hospital, "Region": s.region, "Date": s.date} for s in surgeries])
             st.dataframe(df)
-            col1,col2=st.columns(2)
+            col1,col2 = st.columns(2)
             with col1:
-                excel = export_excel(df)
-                st.download_button("⬇ Export Excel", excel, "report.xlsx")
+                st.download_button("⬇ Export Excel", export_excel(df), "report.xlsx")
             with col2:
-                pdf = export_pdf(df)
-                st.download_button("⬇ Export PDF", pdf, "report.pdf", mime="application/pdf")
+                st.download_button("⬇ Export PDF", export_pdf(df), "report.pdf", mime="application/pdf")
