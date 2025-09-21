@@ -1,277 +1,249 @@
 import streamlit as st
-import pandas as pd
-import matplotlib.pyplot as plt
-from sqlmodel import SQLModel, Field, Session, create_engine, select
+from sqlmodel import SQLModel, Field, Session, create_engine, select, Relationship
+from typing import Optional, List
 from datetime import datetime
-from typing import Optional
-from io import BytesIO
+import pandas as pd
+import altair as alt
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib import colors
+from reportlab.pdfgen import canvas
+import io
 
-# -----------------------------
-# DATABASE SETUP
-# -----------------------------
-DATABASE_URL = "sqlite:///katia.db"
-engine = create_engine(DATABASE_URL, echo=False)
-
+# -------------------------------
+# DATABASE MODELS
+# -------------------------------
 class Staff(SQLModel, table=True):
+    __tablename__ = "staff"
+
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
-    role: str = "Surgeon"
-    region: Optional[str] = None
-    hospital: Optional[str] = None
-    target: int = 0
+    role: str
+    hospital: str
+    region: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
+    surgeries: List["Surgery"] = Relationship(back_populates="staff")
+    targets: List["Target"] = Relationship(back_populates="staff")
+
+
 class Surgery(SQLModel, table=True):
+    __tablename__ = "surgery"
+
     id: Optional[int] = Field(default=None, primary_key=True)
     staff_id: int = Field(foreign_key="staff.id")
-    surgery_type: str
-    region: str
     hospital: str
+    region: str
     date: datetime = Field(default_factory=datetime.utcnow)
 
-def init_db():
-    SQLModel.metadata.create_all(engine)
+    staff: Staff = Relationship(back_populates="surgeries")
+
+
+class Target(SQLModel, table=True):
+    __tablename__ = "target"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    staff_id: int = Field(foreign_key="staff.id")
+    month: str
+    target_surgeries: int
+    assigned_at: datetime = Field(default_factory=datetime.utcnow)
+
+    staff: Staff = Relationship(back_populates="targets")
+
+
+# -------------------------------
+# DATABASE SETUP
+# -------------------------------
+engine = create_engine("sqlite:///surgipulse.db")
+SQLModel.metadata.create_all(engine)
+
 
 def get_session():
     return Session(engine)
 
-# -----------------------------
-# INIT DB + SAMPLE STAFF
-# -----------------------------
-init_db()
-with get_session() as session:
-    if not session.exec(select(Staff)).all():
-        staff_list = [
-            Staff(name="Dr. Erick", region="Eldoret", hospital="MTRH", target=20),
-            Staff(name="Dr. Jane", region="Nairobi", hospital="KNH", target=15),
-            Staff(name="Dr. Brian", region="Meru", hospital="Meru General", target=10),
-        ]
-        session.add_all(staff_list)
-        session.commit()
 
-# -----------------------------
-# HELPERS
-# -----------------------------
-def get_data():
+def seed_default_staff():
+    """Seed default staff if none exist"""
     with get_session() as session:
-        staff = session.exec(select(Staff)).all()
-        surgeries = session.exec(select(Surgery)).all()
-    df_staff = pd.DataFrame([s.dict() for s in staff]) if staff else pd.DataFrame()
-    df_surg = pd.DataFrame([s.dict() for s in surgeries]) if surgeries else pd.DataFrame()
-    return df_staff, df_surg
+        staff_count = session.exec(select(Staff)).all()
+        if not staff_count:
+            staff_list = [
+                Staff(name="Dr. Alice", role="Surgeon", hospital="Eldoret Hospital", region="Rift Valley"),
+                Staff(name="Dr. Brian", role="Surgeon", hospital="Kenyatta Hospital", region="Nairobi"),
+                Staff(name="Dr. Carol", role="Surgeon", hospital="Coast General", region="Coast"),
+            ]
+            session.add_all(staff_list)
+            session.commit()
 
-def export_excel(df_staff, df_surg):
-    output = BytesIO()
+
+seed_default_staff()
+
+
+# -------------------------------
+# EXPORT HELPERS
+# -------------------------------
+def export_excel(df: pd.DataFrame):
+    output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df_staff.to_excel(writer, sheet_name="Staff", index=False)
-        df_surg.to_excel(writer, sheet_name="Surgeries", index=False)
+        df.to_excel(writer, index=False, sheet_name="Report")
     return output.getvalue()
 
-def export_pdf(df_staff, df_surg):
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
-    styles = getSampleStyleSheet()
-    story = []
 
-    story.append(Paragraph("Surgery Report", styles["Title"]))
-    story.append(Spacer(1, 12))
-
-    if not df_surg.empty:
-        total = len(df_surg)
-        by_region = df_surg.groupby("region").size().reset_index(name="count")
-        by_hospital = df_surg.groupby("hospital").size().reset_index(name="count")
-
-        story.append(Paragraph(f"Total Surgeries: {total}", styles["Heading2"]))
-        story.append(Spacer(1, 12))
-
-        # Region table
-        story.append(Paragraph("By Region", styles["Heading3"]))
-        table_data = [by_region.columns.tolist()] + by_region.values.tolist()
-        table = Table(table_data)
-        table.setStyle(TableStyle([("GRID", (0,0), (-1,-1), 0.5, colors.black)]))
-        story.append(table)
-        story.append(Spacer(1, 12))
-
-        # Hospital table
-        story.append(Paragraph("By Hospital", styles["Heading3"]))
-        table_data = [by_hospital.columns.tolist()] + by_hospital.values.tolist()
-        table = Table(table_data)
-        table.setStyle(TableStyle([("GRID", (0,0), (-1,-1), 0.5, colors.black)]))
-        story.append(table)
-
-    doc.build(story)
+def export_pdf(df: pd.DataFrame):
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    text = c.beginText(40, height - 40)
+    text.setFont("Helvetica", 10)
+    lines = df.to_string(index=False).split("\n")
+    for line in lines:
+        text.textLine(line)
+    c.drawText(text)
+    c.showPage()
+    c.save()
+    buffer.seek(0)
     return buffer.getvalue()
 
-# -----------------------------
+
+# -------------------------------
 # STREAMLIT APP
-# -----------------------------
-st.set_page_config(page_title="Surgery Dashboard", layout="wide")
+# -------------------------------
+st.set_page_config(page_title="SurgiPulse Dashboard", layout="wide")
+st.sidebar.title("SurgiPulse Navigation")
+page = st.sidebar.radio("Go to", ["Dashboard", "Log Surgery", "Assign Targets", "Reports", "Leaderboard"])
 
-with st.sidebar:
-    st.image("https://img.icons8.com/color/96/surgery.png", width=64)
-    st.title("Surgery Dashboard")
-    menu = st.radio("Menu", ["Dashboard", "Surgeries", "Targets", "Exports"])
-    st.markdown("---")
-    st.caption("Built for Staff Performance & Insights")
 
-# -----------------------------
+# -------------------------------
 # DASHBOARD
-# -----------------------------
-if menu == "Dashboard":
-    st.header("📊 Surgery Dashboard")
-    df_staff, df_surg = get_data()
+# -------------------------------
+if page == "Dashboard":
+    st.title("📊 Surgery Dashboard")
 
-    if df_staff.empty:
-        st.warning("No staff found.")
-    else:
-        # KPIs
-        total_staff = len(df_staff)
-        total_surgeries = len(df_surg)
-        top_performer = "-"
-        avg_completion = 0
+    with get_session() as session:
+        surgeries = session.exec(select(Surgery)).all()
+        staff = session.exec(select(Staff)).all()
 
-        if not df_surg.empty:
-            counts = df_surg.groupby("staff_id").size()
-            staff_counts = df_staff.set_index("id").join(counts.rename("completed")).fillna(0)
-            staff_counts["completed"] = staff_counts["completed"].astype(int)
-            staff_counts["progress %"] = (
-                staff_counts["completed"] / staff_counts["target"].replace(0, 1) * 100
-            ).round(1)
-            top_performer = staff_counts.sort_values("completed", ascending=False).iloc[0]["name"]
-            avg_completion = staff_counts["completed"].mean()
+        st.metric("Total Surgeries", len(surgeries))
+        st.metric("Total Staff", len(staff))
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Staff", total_staff)
-        col2.metric("Total Surgeries", total_surgeries)
-        col3.metric("Top Performer", top_performer)
-        col4.metric("Avg Surgeries per Staff", f"{avg_completion:.1f}")
+        if surgeries:
+            df = pd.DataFrame([{
+                "Region": s.region,
+                "Hospital": s.hospital,
+                "Date": s.date.date()
+            } for s in surgeries])
 
-        # Charts
-        if not df_surg.empty:
-            st.subheader("📈 Trends Over Time")
-            df_surg["month"] = pd.to_datetime(df_surg["date"]).dt.to_period("M")
-            trend = df_surg.groupby("month").size()
-            fig, ax = plt.subplots()
-            trend.plot(kind="line", marker="o", ax=ax)
-            ax.set_ylabel("Surgeries")
-            st.pyplot(fig)
+            st.subheader("📈 Surgeries by Region")
+            region_chart = alt.Chart(df).mark_bar().encode(
+                x="Region",
+                y="count()",
+                color="Region"
+            )
+            st.altair_chart(region_chart, use_container_width=True)
 
-            st.subheader("🏆 Leaderboard")
-            leaderboard = staff_counts.sort_values("completed", ascending=False)
-            fig, ax = plt.subplots()
-            ax.barh(leaderboard["name"], leaderboard["completed"], color="skyblue")
-            ax.set_xlabel("Completed Surgeries")
-            st.pyplot(fig)
 
-            st.subheader("🌍 Distribution")
+# -------------------------------
+# LOG SURGERY
+# -------------------------------
+elif page == "Log Surgery":
+    st.title("📝 Log Surgery")
+
+    with get_session() as session:
+        staff_list = session.exec(select(Staff)).all()
+        staff_dict = {s.name: s for s in staff_list}
+        staff_name = st.selectbox("Select Staff", list(staff_dict.keys()))
+        staff = staff_dict[staff_name]
+
+        hospital = st.text_input("Hospital", staff.hospital)
+        region = st.text_input("Region", staff.region)
+        date = st.date_input("Surgery Date", datetime.today())
+
+        if st.button("Log Surgery"):
+            new_surgery = Surgery(staff_id=staff.id, hospital=hospital, region=region, date=date)
+            session.add(new_surgery)
+            session.commit()
+            st.success(f"Surgery logged for {staff_name} on {date}")
+
+
+# -------------------------------
+# ASSIGN TARGETS
+# -------------------------------
+elif page == "Assign Targets":
+    st.title("🎯 Assign Surgery Targets")
+
+    with get_session() as session:
+        staff_list = session.exec(select(Staff)).all()
+        staff_dict = {s.name: s for s in staff_list}
+        staff_name = st.selectbox("Select Staff", list(staff_dict.keys()))
+        staff = staff_dict[staff_name]
+
+        month = st.selectbox("Month", [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        ])
+        target = st.number_input("Target Surgeries", min_value=1, step=1)
+
+        if st.button("Assign Target"):
+            new_target = Target(staff_id=staff.id, month=month, target_surgeries=target)
+            session.add(new_target)
+            session.commit()
+            st.success(f"Assigned target of {target} surgeries for {staff_name} in {month}")
+
+
+# -------------------------------
+# REPORTS
+# -------------------------------
+elif page == "Reports":
+    st.title("📑 Reports")
+
+    with get_session() as session:
+        surgeries = session.exec(select(Surgery)).all()
+        if surgeries:
+            df = pd.DataFrame([{
+                "Staff": s.staff.name,
+                "Hospital": s.hospital,
+                "Region": s.region,
+                "Date": s.date.date()
+            } for s in surgeries])
+
+            st.subheader("Surgeries by Staff")
+            st.dataframe(df)
+
             col1, col2 = st.columns(2)
             with col1:
-                region_data = df_surg["region"].value_counts()
-                fig, ax = plt.subplots()
-                ax.pie(region_data, labels=region_data.index, autopct="%1.1f%%")
-                ax.set_title("By Region")
-                st.pyplot(fig)
+                excel = export_excel(df)
+                st.download_button("⬇ Export to Excel", excel, "report.xlsx")
             with col2:
-                hospital_data = df_surg["hospital"].value_counts()
-                fig, ax = plt.subplots()
-                ax.pie(hospital_data, labels=hospital_data.index, autopct="%1.1f%%")
-                ax.set_title("By Hospital")
-                st.pyplot(fig)
+                pdf = export_pdf(df)
+                st.download_button("⬇ Export to PDF", pdf, "report.pdf", mime="application/pdf")
 
-# -----------------------------
-# SURGERIES
-# -----------------------------
-elif menu == "Surgeries":
-    tab1, tab2 = st.tabs(["📝 Log Surgery", "📑 Reports"])
-    df_staff, df_surg = get_data()
+            st.subheader("📊 Surgeries by Hospital")
+            hospital_chart = alt.Chart(df).mark_bar().encode(
+                x="Hospital",
+                y="count()",
+                color="Hospital"
+            )
+            st.altair_chart(hospital_chart, use_container_width=True)
 
-    with tab1:
-        st.subheader("Log Surgery")
-        if df_staff.empty:
-            st.warning("No staff available.")
-        else:
-            staff_dict = {s["name"]: s for s in df_staff.to_dict(orient="records")}
-            surgeon = st.selectbox("Surgeon", staff_dict.keys())
-            surgery_type = st.text_input("Surgery Type")
-            region = st.text_input("Region")
-            hospital = st.text_input("Hospital")
-            if st.button("Log Surgery"):
-                with get_session() as session:
-                    staff = staff_dict[surgeon]
-                    surgery = Surgery(
-                        staff_id=staff["id"],
-                        surgery_type=surgery_type,
-                        region=region,
-                        hospital=hospital,
-                        date=datetime.utcnow(),
-                    )
-                    session.add(surgery)
-                    session.commit()
-                st.success(f"✅ Surgery logged for {surgeon}")
 
-    with tab2:
-        st.subheader("Reports")
-        if df_surg.empty:
-            st.info("No surgeries logged yet.")
-        else:
-            st.dataframe(df_surg)
-            st.subheader("By Surgeon")
-            st.dataframe(df_surg.groupby("staff_id").size().reset_index(name="surgeries"))
-            st.subheader("By Region")
-            st.dataframe(df_surg.groupby("region").size().reset_index(name="surgeries"))
-            st.subheader("By Hospital")
-            st.dataframe(df_surg.groupby("hospital").size().reset_index(name="surgeries"))
+# -------------------------------
+# LEADERBOARD
+# -------------------------------
+elif page == "Leaderboard":
+    st.title("🏆 Leaderboard")
 
-# -----------------------------
-# TARGETS
-# -----------------------------
-elif menu == "Targets":
-    st.header("🎯 Manage Targets & Staff")
-    action = st.radio("Action", ["Assign Targets", "Add Staff"])
-    df_staff, _ = get_data()
+    with get_session() as session:
+        staff_list = session.exec(select(Staff)).all()
+        leaderboard = []
 
-    if action == "Assign Targets":
-        if df_staff.empty:
-            st.warning("No staff found.")
-        else:
-            staff_dict = {s["name"]: s for s in df_staff.to_dict(orient="records")}
-            selected = st.selectbox("Select Staff", staff_dict.keys())
-            new_target = st.number_input("Set Target", min_value=0, step=1)
-            if st.button("Update Target"):
-                with get_session() as session:
-                    staff = session.get(Staff, staff_dict[selected]["id"])
-                    staff.target = new_target
-                    session.add(staff)
-                    session.commit()
-                st.success(f"✅ Target updated for {selected}")
+        for s in staff_list:
+            surgeries = session.exec(select(Surgery).where(Surgery.staff_id == s.id)).all()
+            targets = session.exec(select(Target).where(Target.staff_id == s.id)).all()
+            total_target = sum(t.target_surgeries for t in targets)
+            leaderboard.append({
+                "Staff": s.name,
+                "Surgeries": len(surgeries),
+                "Target": total_target,
+                "Progress": f"{len(surgeries)}/{total_target}" if total_target else "No target"
+            })
 
-    elif action == "Add Staff":
-        name = st.text_input("Name")
-        region = st.text_input("Region")
-        hospital = st.text_input("Hospital")
-        target = st.number_input("Target", min_value=0, step=1)
-        if st.button("Add Staff"):
-            with get_session() as session:
-                staff = Staff(name=name, region=region, hospital=hospital, target=target)
-                session.add(staff)
-                session.commit()
-            st.success(f"✅ Staff {name} added")
-
-# -----------------------------
-# EXPORTS
-# -----------------------------
-elif menu == "Exports":
-    st.header("📤 Export Reports")
-    df_staff, df_surg = get_data()
-
-    if st.button("⬇️ Download Excel"):
-        data = export_excel(df_staff, df_surg)
-        st.download_button("Download Excel File", data, "surgery_reports.xlsx")
-
-    if st.button("⬇️ Download PDF"):
-        data = export_pdf(df_staff, df_surg)
-        st.download_button("Download PDF File", data, "surgery_report.pdf")
+        df = pd.DataFrame(leaderboard).sort_values(by="Surgeries", ascending=False)
+        st.dataframe(df)
