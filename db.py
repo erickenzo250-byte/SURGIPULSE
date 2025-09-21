@@ -1,62 +1,46 @@
 from datetime import datetime
-from sqlmodel import SQLModel, Field, Relationship, create_engine, Session
+from sqlmodel import SQLModel, Field, create_engine, Session, Relationship
+from typing import Optional, List
 
-DATABASE_URL = "sqlite:///./app.db"
-engine = create_engine(DATABASE_URL, echo=True)
+# -------------------------
+# MODELS
+# -------------------------
 
-
-class User(SQLModel, table=True):
-    __tablename__ = "users"
-
-    id: int | None = Field(default=None, primary_key=True)
-    username: str
-    role: str = Field(default="staff")  # "admin" or "staff"
-
-    surgeries: list["Surgery"] = Relationship(back_populates="staff")
-    targets: list["Target"] = Relationship(back_populates="staff")
+class Staff(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    role: str
+    surgeries: List["Surgery"] = Relationship(back_populates="staff")
+    targets: List["SurgeryTarget"] = Relationship(back_populates="staff")
 
 
 class Surgery(SQLModel, table=True):
-    __tablename__ = "surgeries"
-
-    id: int | None = Field(default=None, primary_key=True)
-    staff_id: int = Field(foreign_key="users.id")
-    surgery_type: str                 # trauma, spine, tumor, arthroplasty
-    patient_id: str | None = None
+    id: Optional[int] = Field(default=None, primary_key=True)
+    staff_id: int = Field(foreign_key="staff.id")
+    surgery_type: str
     date: datetime = Field(default_factory=datetime.utcnow)
-    duration_minutes: int | None = None
-    outcome: str | None = None
 
-    staff: User = Relationship(back_populates="surgeries")
+    staff: Optional[Staff] = Relationship(back_populates="surgeries")
 
 
-class Target(SQLModel, table=True):
-    __tablename__ = "targets"
+class SurgeryTarget(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    staff_id: int = Field(foreign_key="staff.id")
+    month: str   # e.g. "2025-09"
+    target_count: int
+    achieved_count: int = 0
 
-    id: int | None = Field(default=None, primary_key=True)
-    staff_id: int = Field(foreign_key="users.id")
-    case_type: str = Field(default="all")  # trauma, spine, tumor, arthroplasty, or all
-    target_cases: int
-    period: str   # e.g. "2025-09"
+    staff: Optional[Staff] = Relationship(back_populates="targets")
 
-    staff: User = Relationship(back_populates="targets")
-    deliverables: list["Deliverable"] = Relationship(back_populates="target")
+# -------------------------
+# DATABASE CONNECTION
+# -------------------------
 
-
-class Deliverable(SQLModel, table=True):
-    __tablename__ = "deliverables"
-
-    id: int | None = Field(default=None, primary_key=True)
-    target_id: int = Field(foreign_key="targets.id")
-    deliverable_type: str = Field(default="cases")  # only "cases" for now
-    is_completed: bool = Field(default=False)
-
-    target: Target = Relationship(back_populates="deliverables")
-
+sqlite_url = "sqlite:///database.db"
+engine = create_engine(sqlite_url, echo=True)
 
 def init_db():
     SQLModel.metadata.create_all(engine)
-
 
 def get_session():
     return Session(engine)
